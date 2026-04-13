@@ -13,6 +13,11 @@ from src.llm_service import MockLLMService
 
 def process_file(input_file: str, output_file: str, max_articles: int = None, use_mock: bool = False):
     print("--- Initializing Pipeline ---")
+    min_entities_per_article = getattr(config, "MIN_ENTITIES_PER_ARTICLE", 5)
+    max_entities_per_article = getattr(config, "MAX_ENTITIES_PER_ARTICLE", 10)
+    candidate_top_k = getattr(config, "ENTITY_CANDIDATE_TOP_K", 3)
+    distance_threshold = getattr(config, "ENTITY_DISTANCE_THRESHOLD", 1.2)
+    min_article_content_length = getattr(config, "MIN_ARTICLE_CONTENT_LENGTH", 100)
 
     if not use_mock:
         api_key = os.environ.get("API_KEY")
@@ -25,12 +30,18 @@ def process_file(input_file: str, output_file: str, max_articles: int = None, us
 
         try:
             from src.llm_service import LLMService
-            llm = LLMService(api_key=api_key, base_url=getattr(config, "LLM_BASE_URL", None), model_name=getattr(config, "MODEL_NAME", None))
+            llm = LLMService(
+                api_key=api_key,
+                base_url=getattr(config, "LLM_BASE_URL", None),
+                model_name=getattr(config, "MODEL_NAME", None),
+                min_entities=min_entities_per_article,
+                max_entities=max_entities_per_article
+            )
             print("Using REAL LLM Service.")
         except ImportError as e:
             print(f"[Warning] Failed to import LLMService: {e}. Falling back to MockLLMService.")
             from src.llm_service import MockLLMService
-            llm = MockLLMService()
+            llm = MockLLMService(min_entities=min_entities_per_article, max_entities=max_entities_per_article)
         except Exception as e:
             print(f"[Error] Failed to initialize real LLM service: {e}")
             import traceback
@@ -38,14 +49,21 @@ def process_file(input_file: str, output_file: str, max_articles: int = None, us
             return
     else:
         from src.llm_service import MockLLMService
-        llm = MockLLMService()
+        llm = MockLLMService(min_entities=min_entities_per_article, max_entities=max_entities_per_article)
         print("Using MOCK LLM Service.")
 
     vector_store = VectorStore(
         persist_directory=getattr(config, "CHROMA_PERSIST_DIR", "data/chroma_db"), 
         collection_name=getattr(config, "CHROMA_COLLECTION_NAME", "pipeline_entities")
     )
-    pipeline = Pipeline(llm_service=llm, vector_store=vector_store)
+    pipeline = Pipeline(
+        llm_service=llm,
+        vector_store=vector_store,
+        candidate_top_k=candidate_top_k,
+        distance_threshold=distance_threshold,
+        min_entities_per_article=min_entities_per_article,
+        max_entities_per_article=max_entities_per_article
+    )
 
     print(f"\n--- Loading Articles from {input_file} ---")
     if not os.path.exists(input_file):
@@ -62,8 +80,8 @@ def process_file(input_file: str, output_file: str, max_articles: int = None, us
                 title = data.get("title", "").strip()
                 content = data.get("content", "").strip()
                 
-                if not title or not content or len(content) < 100:
-                    print(f"[Warning] Skipping line {i+1} due to missing or extremely short title/content (<100 chars).")
+                if not title or not content or len(content) < min_article_content_length:
+                    print(f"[Warning] Skipping line {i+1} due to missing or extremely short title/content (<{min_article_content_length} chars).")
                     continue
                     
                 articles.append(Article(

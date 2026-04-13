@@ -9,7 +9,7 @@ class Article(BaseModel):
 
 class ExtractionResult(BaseModel):
     summary: str = Field(description="A 1-sentence summary of the article")
-    keywords: List[str] = Field(description="5 to 10 key entities or concepts")
+    keywords: List[str] = Field(description="Key entities or concepts extracted from the article")
 
 class Entity(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

@@ -19,12 +19,41 @@ def retry_on_exception(max_retries=3, delay=1):
         return wrapper
     return decorator
 
+def normalize_keywords(keywords: List[str], max_entities: int) -> List[str]:
+    normalized_keywords = []
+    seen = set()
+
+    for keyword in keywords or []:
+        if keyword is None:
+            continue
+
+        normalized = str(keyword).strip()
+        normalized_key = normalized.lower()
+
+        if not normalized or normalized_key in {"null", "none", "n/a", "undefined"}:
+            continue
+
+        if normalized_key in seen:
+            continue
+
+        seen.add(normalized_key)
+        normalized_keywords.append(normalized)
+
+        if len(normalized_keywords) >= max_entities:
+            break
+
+    return normalized_keywords
+
 class MockLLMService:
     """
     A mock service used for Phase 1-3 development to avoid hitting real API limits
     and ensure fast, controllable debugging.
     """
     
+    def __init__(self, min_entities: int = 5, max_entities: int = 10):
+        self.min_entities = min_entities
+        self.max_entities = max_entities
+
     @retry_on_exception(max_retries=3, delay=1)
     def extract_summary_and_keywords(self, article: Article) -> ExtractionResult:
         print(f"[MockLLM] Extracting summary and keywords for article: '{article.title}'")
@@ -37,6 +66,8 @@ class MockLLMService:
         else:
             keywords = ["科技", "人工智能", "创新"]
             
+        keywords = normalize_keywords(keywords, self.max_entities)
+
         return ExtractionResult(
             summary=f"This is a mock 1-sentence summary for the article '{article.title}'.",
             keywords=keywords
@@ -72,9 +103,11 @@ class LLMService:
     """
     A real LLM service using OpenAI API (or compatible APIs).
     """
-    def __init__(self, api_key: str, base_url: Optional[str] = None, model_name: Optional[str] = None):      
+    def __init__(self, api_key: str, base_url: Optional[str] = None, model_name: Optional[str] = None, min_entities: int = 5, max_entities: int = 10):
         base_url = base_url or "https://api.openai.com/v1"
         self.model_name = model_name or "gpt-4o-mini"
+        self.min_entities = min_entities
+        self.max_entities = max_entities
         self.client = OpenAI(api_key=api_key, base_url=base_url)
 
     @retry_on_exception(max_retries=3, delay=2)
@@ -84,7 +117,9 @@ class LLMService:
         prompt = f"""
 Please analyze the following article and extract:
 1. A 1-sentence summary of the article.
-2. 5 to 10 key entities or concepts.
+2. {self.min_entities} to {self.max_entities} key entities or concepts.
+
+Prefer precision over padding. Return distinct items only. If the article is not information-dense, it is acceptable to return fewer than {self.min_entities}, but never return more than {self.max_entities}.
 
 Respond strictly in JSON format matching this schema:
 {{
@@ -107,7 +142,9 @@ Article Content: {article.content}
         
         content = response.choices[0].message.content
         data = json.loads(content)
-        return ExtractionResult(**data)
+        extraction = ExtractionResult(**data)
+        extraction.keywords = normalize_keywords(extraction.keywords, self.max_entities)
+        return extraction
 
     @retry_on_exception(max_retries=3, delay=2)
     def resolve_entities(self, keyword: str, candidates: List[Entity]) -> ResolutionResult:
